@@ -10,6 +10,9 @@ from pytorch3d.io import save_obj
 
 
 from src.util import make_faces
+from src.operators import get_gaussian
+
+from src.gaussian import GaussianLayer
 
 edges = torch.tensor([
     [ 0, 22,  2],
@@ -136,22 +139,31 @@ def make_cube_mesh(n, start=-0.5, end=0.5):
     return mesh
 
 class Cube(nn.Module):
-    def __init__(self, n, start=-0.5, end=0.5):
+    def __init__(self, n, kernel=21, sigma=7, start=-0.5, end=0.5):
         super(Cube, self).__init__()        
         self.n = n
         self.params = nn.ParameterDict({
-            'front': nn.Parameter(torch.zeros((n, n, 3))),
-            'back' : nn.Parameter(torch.zeros((n, n, 3))),
-            'left' : nn.Parameter(torch.zeros((n, n, 3))),
-            'right': nn.Parameter(torch.zeros((n, n, 3))),
-            'top'  : nn.Parameter(torch.zeros((n, n, 3))),
-            'down' : nn.Parameter(torch.zeros((n, n, 3))),            
+            'front': nn.Parameter(torch.zeros((1, 3, n, n))),
+            'back' : nn.Parameter(torch.zeros((1, 3, n, n))),
+            'left' : nn.Parameter(torch.zeros((1, 3, n, n))),
+            'right': nn.Parameter(torch.zeros((1, 3, n, n))),
+            'top'  : nn.Parameter(torch.zeros((1, 3, n, n))),
+            'down' : nn.Parameter(torch.zeros((1, 3, n, n))),
         })
         self.source = make_cube_mesh(n, start, end)
+        self.gaussian = get_gaussian(kernel)
+        #self.gaussian = GaussianLayer(kernel, sigma=sigma)
+        clip_value = 1. / n
+        for p in self.params.values():
+            #p.register_hook(lambda grad: torch.nan_to_num(grad))
+            p.register_hook(lambda grad: self.gaussian(torch.nan_to_num(grad)))
+            #p.register_hook(lambda grad: torch.clamp(self.gaussian(grad), -clip_value, clip_value))
+            #p.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))
     
     def make_vert(self):
-        return torch.stack(list(self.params.values())).reshape(-1, 3)
-    
+        return torch.cat([torch.sigmoid(p)[0].reshape(3, -1).t()
+                          for p in self.params.values()])           
+
     def forward(self):
         deform_verts = self.make_vert()
         new_src_mesh = self.source.offset_verts(deform_verts)
@@ -164,5 +176,5 @@ class Cube(nn.Module):
     
     def export(self, f):
         mesh = self.forward().detach()
-        save_obj(f, mesh.verts_packed(), mesh.faces_packed())    
+        save_obj(f, mesh.verts_packed(), mesh.faces_packed())   
 
