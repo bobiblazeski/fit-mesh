@@ -12,7 +12,8 @@ from pytorch3d.io import save_obj
 from src.util import make_faces
 from src.operators import get_gaussian
 
-from src.gaussian import GaussianLayer
+from src.discrete_gaussian import DiscreteGaussian
+from src.discrete_laplacian import DiscreteLaplacian
 
 edges = torch.tensor([
     [ 0, 22,  2],
@@ -143,38 +144,43 @@ class Cube(nn.Module):
         super(Cube, self).__init__()        
         self.n = n
         self.params = nn.ParameterDict({
-            'front': nn.Parameter(torch.zeros((1, 3, n, n))),
-            'back' : nn.Parameter(torch.zeros((1, 3, n, n))),
-            'left' : nn.Parameter(torch.zeros((1, 3, n, n))),
-            'right': nn.Parameter(torch.zeros((1, 3, n, n))),
-            'top'  : nn.Parameter(torch.zeros((1, 3, n, n))),
-            'down' : nn.Parameter(torch.zeros((1, 3, n, n))),
+            'front': nn.Parameter(torch.zeros((1, 3, n, n), requires_grad=True)),
+            'back' : nn.Parameter(torch.zeros((1, 3, n, n), requires_grad=False)),
+            'left' : nn.Parameter(torch.zeros((1, 3, n, n), requires_grad=False)),
+            'right': nn.Parameter(torch.zeros((1, 3, n, n), requires_grad=False)),
+            'top'  : nn.Parameter(torch.zeros((1, 3, n, n), requires_grad=False)),
+            'down' : nn.Parameter(torch.zeros((1, 3, n, n), requires_grad=False)),
         })
         self.source = make_cube_mesh(n, start, end)
         self.gaussian = get_gaussian(kernel)
-        #self.gaussian = GaussianLayer(kernel, sigma=sigma)
+        #self.gaussian = DiscreteGaussian(kernel, sigma=sigma)
+        self.laplacian = DiscreteLaplacian()
         clip_value = 1. / n
         for p in self.params.values():
             #p.register_hook(lambda grad: torch.nan_to_num(grad))
             p.register_hook(lambda grad: self.gaussian(torch.nan_to_num(grad)))
             #p.register_hook(lambda grad: torch.clamp(self.gaussian(grad), -clip_value, clip_value))
-            #p.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))
-    
+            #p.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))        
+
     def make_vert(self):
-        return torch.cat([torch.sigmoid(p)[0].reshape(3, -1).t()
-                          for p in self.params.values()])           
+        return torch.cat([p[0].reshape(3, -1).t()
+                          for p in self.params.values()]) 
 
     def forward(self):
-        deform_verts = self.make_vert()
+        ps = torch.cat([p for p in self.params.values()])
+        deform_verts = ps.permute(0, 2, 3, 1).reshape(-1, 3)        
         new_src_mesh = self.source.offset_verts(deform_verts)
-        return new_src_mesh
+        # deform_verts = self.make_vert()
+        # new_src_mesh = self.source.offset_verts(deform_verts)
+        return new_src_mesh, self.laplacian(ps)
     
     def to(self, device):
         module = super(Cube, self).to(device)        
         module.source = self.source.to(device)        
         return module
     
-    def export(self, f):
-        mesh = self.forward().detach()
+    def export(self, f):        
+        mesh, _ = self.forward()
+        mesh = mesh.detach()
         save_obj(f, mesh.verts_packed(), mesh.faces_packed())   
 

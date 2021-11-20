@@ -4,17 +4,18 @@ import torch
 import torch.nn as nn
 from scipy.ndimage import gaussian_filter
 
-class GaussianLayer(nn.Module):
+class DiscreteGaussian(nn.Module):
     def __init__(self, kernel_size, sigma=7):
-        super(GaussianLayer, self).__init__()
+        super(DiscreteGaussian, self).__init__()
         assert kernel_size % 2 == 1
         self.kernel_size = kernel_size
         self.side = (kernel_size-1) // 2
         self.sigma = sigma
         self.seq = nn.Sequential(
             nn.ReflectionPad2d(self.side), 
-            nn.Conv2d(3, 3, self.kernel_size, stride=1, padding=0, bias=None, groups=3)
+          nn.Conv2d(3, 3, self.kernel_size, stride=1, padding=0, bias=None, groups=3)
         )
+        self.seq.requires_grad_(False)
         self.weights_init()
 
     def forward(self, x):
