@@ -172,7 +172,7 @@ class Cube(nn.Module):
         new_src_mesh = self.source.offset_verts(deform_verts)
         # deform_verts = self.make_vert()
         # new_src_mesh = self.source.offset_verts(deform_verts)
-        return new_src_mesh, self.laplacian(ps)
+        return new_src_mesh, 0 #self.laplacian(ps)
     
     def to(self, device):
         module = super(Cube, self).to(device)        
