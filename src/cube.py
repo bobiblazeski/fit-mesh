@@ -1,8 +1,10 @@
 # pyright: reportMissingImports=false
 from collections import OrderedDict
+import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from pytorch3d.structures import Meshes
 from pytorch3d.renderer import TexturesVertex
@@ -139,26 +141,31 @@ def make_cube_mesh(n, start=-0.5, end=0.5):
     mesh = Meshes(verts=[vert], faces=[faces], textures=textures)
     return mesh
 
+def sides_dict(n):
+    return nn.ParameterDict({
+        'front': nn.Parameter(torch.zeros((1, 3, n, n))),
+        'back' : nn.Parameter(torch.zeros((1, 3, n, n))),
+        'left' : nn.Parameter(torch.zeros((1, 3, n, n))),
+        'right': nn.Parameter(torch.zeros((1, 3, n, n))),
+        'top'  : nn.Parameter(torch.zeros((1, 3, n, n))),
+        'down' : nn.Parameter(torch.zeros((1, 3, n, n))),
+    })
+
 class Cube(nn.Module):
-    def __init__(self, n, kernel=21, sigma=7, start=-0.5, end=0.5):
+    def __init__(self, n, kernel=21, sigma=7, clip_value = 0.1, start=-0.5, end=0.5):
         super(Cube, self).__init__()        
         self.n = n
-        self.params = nn.ParameterDict({
-            'front': nn.Parameter(torch.zeros((1, 3, n, n), requires_grad=True)),
-            'back' : nn.Parameter(torch.zeros((1, 3, n, n), requires_grad=False)),
-            'left' : nn.Parameter(torch.zeros((1, 3, n, n), requires_grad=False)),
-            'right': nn.Parameter(torch.zeros((1, 3, n, n), requires_grad=False)),
-            'top'  : nn.Parameter(torch.zeros((1, 3, n, n), requires_grad=False)),
-            'down' : nn.Parameter(torch.zeros((1, 3, n, n), requires_grad=False)),
-        })
+        self.params = sides_dict(n)
         self.source = make_cube_mesh(n, start, end)
-        self.gaussian = get_gaussian(kernel)
-        #self.gaussian = DiscreteGaussian(kernel, sigma=sigma)
-        self.laplacian = DiscreteLaplacian()
-        clip_value = 1. / n
+        #self.gaussian = get_gaussian(kernel)
+        self.gaussian = DiscreteGaussian(kernel, sigma=sigma)
+        self.laplacian = DiscreteLaplacian()        
+        print(clip_value)
         for p in self.params.values():
             #p.register_hook(lambda grad: torch.nan_to_num(grad))
-            p.register_hook(lambda grad: self.gaussian(torch.nan_to_num(grad)))
+            #p.register_hook(lambda grad: self.gaussian(torch.nan_to_num(grad)))
+            p.register_hook(lambda grad: torch.clamp(
+                self.gaussian(torch.nan_to_num(grad)), -clip_value, clip_value))
             #p.register_hook(lambda grad: torch.clamp(self.gaussian(grad), -clip_value, clip_value))
             #p.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))        
 
@@ -184,3 +191,55 @@ class Cube(nn.Module):
         mesh = mesh.detach()
         save_obj(f, mesh.verts_packed(), mesh.faces_packed())   
 
+
+
+class ProgressiveCube(nn.Module):
+    def __init__(self, n, kernel=21, sigma=7, start=-0.5, end=0.5):
+        super(ProgressiveCube, self).__init__()        
+        self.n = n
+        self.side_names = list(sides_dict(1).keys())
+        self.params = nn.ModuleList([sides_dict(2**i)
+            for i in range(1, int(math.log2(n))+1)])
+        
+        self.source = make_cube_mesh(n, start, end)
+        self.gaussian = get_gaussian(kernel)
+        #self.gaussian = DiscreteGaussian(kernel, sigma=sigma)
+        self.laplacian = DiscreteLaplacian()
+        clip_value = 1. / n
+        for d in self.params:
+            for p in d.values():
+                #p.register_hook(lambda grad: torch.nan_to_num(grad))
+                p.register_hook(lambda grad: self.gaussian(
+                  torch.clamp(torch.nan_to_num(grad), -clip_value, clip_value)))
+                #p.register_hook(lambda grad: torch.clamp(self.gaussian(grad), -clip_value, clip_value))
+                #p.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))        
+
+    def make_vert(self):
+        return torch.cat([p[0].reshape(3, -1).t()
+                          for p in self.params.values()])
+    
+    def scale(self, t):
+        return  F.interpolate(t, self.n, mode='bilinear', align_corners=True)
+
+    def forward(self):
+        summed = {}
+        for d in self.params:            
+            for key in self.side_names:
+                if key in summed:
+                    summed[key] = summed[key] + self.scale(d[key])
+                else:
+                    summed[key] = self.scale(d[key])        
+        ps = torch.cat([p for p in summed.values()])        
+        deform_verts = ps.permute(0, 2, 3, 1).reshape(-1, 3)         
+        new_src_mesh = self.source.offset_verts(deform_verts)        
+        return new_src_mesh, self.laplacian(ps)
+    
+    def to(self, device):
+        module = super(ProgressiveCube, self).to(device)        
+        module.source = self.source.to(device)        
+        return module
+    
+    def export(self, f):        
+        mesh, _ = self.forward()
+        mesh = mesh.detach()
+        save_obj(f, mesh.verts_packed(), mesh.faces_packed()) 
