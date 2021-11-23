@@ -157,8 +157,8 @@ class Cube(nn.Module):
         self.n = n
         self.params = sides_dict(n)
         self.source = make_cube_mesh(n, start, end)
-        #self.gaussian = get_gaussian(kernel)
-        self.gaussian = DiscreteGaussian(kernel, sigma=sigma)
+        self.gaussian = get_gaussian(kernel)
+        #self.gaussian = DiscreteGaussian(kernel, sigma=sigma)
         self.laplacian = DiscreteLaplacian()        
         print(clip_value)
         for p in self.params.values():
