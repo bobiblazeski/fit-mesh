@@ -21,6 +21,7 @@ def tensor(*args, **kwargs):
 
 glctx = dr.RasterizeGLContext()
 
+vert = vert + torch.randn_like(vert, device=device) * 0.1
 rast, _ = dr.rasterize(glctx, vert, faces, resolution=[256, 256])
 out, _ = dr.interpolate(colors, rast, faces)
 

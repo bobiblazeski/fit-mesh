@@ -7,6 +7,7 @@ from scipy.ndimage import gaussian_filter
 class DiscreteGaussian(nn.Module):
     def __init__(self, kernel_size, sigma=7):
         super(DiscreteGaussian, self).__init__()
+        print(kernel_size)
         assert kernel_size % 2 == 1
         self.kernel_size = kernel_size
         self.side = (kernel_size-1) // 2

@@ -169,7 +169,7 @@ class SourceCube(nn.Module):
         vertices = torch.stack(list(sides.values())).reshape(-1, 3)
         self.register_buffer('vertices', vertices)
         self.register_buffer('faces', make_cube_faces(n).int())
-        self.register_buffer('colors', torch.ones_like(vertices))
+        self.register_buffer('colors', torch.ones_like(vertices) * 0.5)
 
     def to_homogeneous(_, t):
         return torch.cat((t,
