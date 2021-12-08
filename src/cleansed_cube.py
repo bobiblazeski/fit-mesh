@@ -13,8 +13,9 @@ import torch.nn.functional as F
 #from src.util import make_faces
 from src.operators import get_gaussian
 
-#from src.discrete_gaussian import DiscreteGaussian
+from src.discrete_gaussian import DiscreteGaussian
 from src.discrete_laplacian import DiscreteLaplacian
+from src.padding import pad_side
 
 
 from trimesh.util import triangle_strips_to_faces
@@ -181,17 +182,18 @@ class SourceCube(nn.Module):
         return Mesh(pos, self.faces, self.colors)
 
 class SimpleCube(nn.Module):
-    def __init__(self, n, kernel=5, sigma=3, clip_value = 0.1, start=-0.5, end=0.5):
+    def __init__(self, n, kernel=5, sigma=1, clip_value = 0.1, start=-0.5, end=0.5):
         super(SimpleCube, self).__init__()        
         self.n = n
+        self.kernel = kernel
         self.params = sides_dict(n)
         self.source = SourceCube(n, start, end)
-        self.gaussian = get_gaussian(kernel)
-        #self.gaussian = DiscreteGaussian(kernel, sigma=sigma)
-        self.laplacian = DiscreteLaplacian()        
+        #self.gaussian = get_gaussian(kernel)
+        self.gaussian = DiscreteGaussian(kernel, sigma=sigma, padding=False)
+        self.laplacian = DiscreteLaplacian()          
         for p in self.params.values():            
             p.register_hook(lambda grad: torch.clamp(
-                self.gaussian(torch.nan_to_num(grad)), -clip_value, clip_value))            
+                torch.nan_to_num(grad), -clip_value, clip_value))
 
     def make_vert(self):
         return torch.cat([p[0].reshape(3, -1).t()
@@ -201,36 +203,50 @@ class SimpleCube(nn.Module):
         ps = torch.cat([p for p in self.params.values()])
         deform_verts = ps.permute(0, 2, 3, 1).reshape(-1, 3)        
         new_src_mesh = self.source(deform_verts)        
-        return new_src_mesh, 0 # self.laplacian(ps)        
+        return new_src_mesh, 0 # self.laplacian(ps)
     
+    def smooth(self):
+        sides = {}
+        for side_name in self.params:
+            grad = self.params[side_name].grad[0]
+            sides[side_name] = grad.permute(1, 2, 0)
+            
+        for side_name in self.params:
+            padded = pad_side(sides, side_name, self.kernel)
+            padded = padded.permute(2, 0, 1)[None]
+            padded = self.gaussian(padded)
+            self.params[side_name].grad.copy_(padded)    
+      
     def export(self, f):        
         mesh, _ = self.forward()
-        vertices, faces = mesh.vertices.detach(), mesh.faces.detach()
+        vertices = mesh.vertices[0].cpu().detach()
+        faces = mesh.faces.cpu().detach()        
         mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
         mesh.export(f)
 
 class ProgressiveCube(nn.Module):
-    def __init__(self, n, kernel=5, sigma=3, start=-0.5, end=0.5):
+    def __init__(self, n, kernel=3, sigma=1, clip=None, start=-0.5, end=0.5):
         super(ProgressiveCube, self).__init__()        
         self.n = n
+        self.kernel= kernel
         self.side_names = list(sides_dict(1).keys())
         self.params = nn.ModuleList([sides_dict(2**i)
             for i in range(1, int(math.log2(n))+1)])
         
         self.source = SourceCube(n, start, end)
-        self.gaussian = get_gaussian(kernel)
-        #self.gaussian = DiscreteGaussian(kernel, sigma=sigma)
+        #self.gaussian = get_gaussian(kernel)
+        self.gaussian = DiscreteGaussian(kernel, sigma=sigma,  padding=False)
         self.laplacian = DiscreteLaplacian()
-        clip_value = 1. / n
+        clip = clip or 1. / n
         for d in self.params:
             for p in d.values():                
-                p.register_hook(lambda grad: self.gaussian(
-                  torch.clamp(torch.nan_to_num(grad), -clip_value, clip_value)))                
+                p.register_hook(lambda grad:
+                    torch.clamp(torch.nan_to_num(grad), -clip, clip))
 
     def make_vert(self):
         return torch.cat([p[0].reshape(3, -1).t()
                           for p in self.params.values()])
-    
+
     def scale(self, t):
         return  F.interpolate(t, self.n, mode='bilinear', align_corners=True)
 
@@ -247,8 +263,22 @@ class ProgressiveCube(nn.Module):
         new_src_mesh = self.source(deform_verts)        
         return new_src_mesh, 0#self.laplacian(ps)    
     
+    def smooth(self):
+        for i in range(len(self.params)):
+            params, sides = self.params[i], {}
+            for side_name in params:
+                grad = params[side_name].grad[0]        
+                sides[side_name] = grad.permute(1, 2, 0)
+
+            for side_name in params:
+                padded = pad_side(sides, side_name, self.kernel)
+                padded = padded.permute(2, 0, 1)[None]
+                padded = self.gaussian(padded)
+                self.params[i][side_name].grad.copy_(padded)
+
     def export(self, f):        
         mesh, _ = self.forward()
-        vertices, faces = mesh.vertices.detach(), mesh.faces.detach()
+        vertices = mesh.vertices[0].cpu().detach()
+        faces = mesh.faces.cpu().detach()        
         mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
         mesh.export(f)
