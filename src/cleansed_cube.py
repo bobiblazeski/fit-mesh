@@ -203,7 +203,7 @@ class SimpleCube(nn.Module):
         ps = torch.cat([p for p in self.params.values()])
         deform_verts = ps.permute(0, 2, 3, 1).reshape(-1, 3)        
         new_src_mesh = self.source(deform_verts)        
-        return new_src_mesh, 0 # self.laplacian(ps)
+        return new_src_mesh, self.laplacian(ps)
     
     def smooth(self):
         sides = {}
